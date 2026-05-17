@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xtream Proxy</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: Arial, sans-serif; background: #0a0a0a; color: white; }
+        .header { background: linear-gradient(135deg, #1a1a2e, #16213e); padding: 20px; text-align: center; }
+        .header h1 { font-size: 24px; margin-bottom: 10px; }
+        .tabs { display: flex; justify-content: center; gap: 10px; margin: 15px 0; }
+        .tab { padding: 10px 30px; border: none; border-radius: 20px; cursor: pointer; background: #333; color: white; font-size: 16px; }
+        .tab.active { background: #e50914; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .categories { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+        .category-btn { padding: 8px 20px; border: 1px solid #444; border-radius: 20px; cursor: pointer; background: transparent; color: white; font-size: 14px; }
+        .category-btn:hover, .category-btn.active { background: #e50914; border-color: #e50914; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 20px; }
+        .card { background: #1a1a1a; border-radius: 10px; overflow: hidden; cursor: pointer; transition: transform 0.2s; }
+        .card:hover { transform: scale(1.05); }
+        .card img { width: 100%; height: 280px; object-fit: cover; }
+        .card-info { padding: 10px; }
+        .card-info h3 { font-size: 14px; margin-bottom: 5px; }
+        .card-info p { font-size: 12px; color: #999; }
+        .player-container { max-width: 900px; margin: 20px auto; }
+        video { width: 100%; border-radius: 10px; background: black; }
+        .back-btn { padding: 10px 20px; background: #333; color: white; border: none; border-radius: 5px; cursor: pointer; margin-bottom: 20px; }
+        .back-btn:hover { background: #555; }
+        .episodes { display: flex; flex-wrap: wrap; gap: 10px; margin: 20px 0; }
+        .episode-btn { padding: 8px 15px; border: 1px solid #444; border-radius: 5px; cursor: pointer; background: #222; color: white; }
+        .episode-btn:hover, .episode-btn.active { background: #e50914; border-color: #e50914; }
+        .loading { text-align: center; padding: 50px; font-size: 18px; color: #999; }
+        .search { width: 100%; padding: 12px; border-radius: 25px; border: 1px solid #444; background: #1a1a1a; color: white; font-size: 16px; margin: 20px 0; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎬 Xtream Proxy</h1>
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('movies')">Filmes</button>
+            <button class="tab" onclick="showTab('series')">Séries</button>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- Página Principal -->
+        <div id="mainPage">
+            <div class="categories" id="categories"></div>
+            <input type="text" class="search hidden" id="searchBox" placeholder="🔍 Buscar..." oninput="filterItems()">
+            <div class="grid" id="contentGrid"></div>
+            <div class="loading" id="loading">Carregando...</div>
+        </div>
+
+        <!-- Página do Player -->
+        <div id="playerPage" class="hidden">
+            <button class="back-btn" onclick="goBack()">← Voltar</button>
+            <div class="player-container">
+                <h2 id="playerTitle"></h2>
+                <video id="videoPlayer" controls autoplay>
+                    Seu navegador não suporta vídeo HTML5.
+                </video>
+                <div class="episodes" id="episodesList"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = 'http://primegold.site/player_api.php';
+        const U = 'vodsapi-pro';
+        const P = '401963597';
+        
+        let currentTab = 'movies';
+        let currentCategory = null;
+        let currentSeriesId = null;
+        let allItems = [];
+
+        // Iniciar
+        showTab('movies');
+
+        async function fetchAPI(params) {
+            const url = `${API}?username=${U}&password=${P}&${params}`;
+            const res = await fetch(url);
+            return await res.json();
+        }
+
+        function showTab(tab) {
+            currentTab = tab;
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            event.target.classList.add('active');
+            
+            if (tab === 'movies') {
+                loadMovieCategories();
+            } else {
+                loadSeriesCategories();
+            }
+        }
+
+        async function loadMovieCategories() {
+            const data = await fetchAPI('action=get_vod_categories');
+            renderCategories(data);
+            loadMoviesByCategory(data[0]?.category_id);
+        }
+
+        async function loadSeriesCategories() {
+            const data = await fetchAPI('action=get_series_categories');
+            renderCategories(data);
+            loadSeriesByCategory(data[0]?.category_id);
+        }
+
+        function renderCategories(categories) {
+            const container = document.getElementById('categories');
+            container.innerHTML = categories.map((cat, i) => 
+                `<button class="category-btn ${i === 0 ? 'active' : ''}" onclick="selectCategory(this, '${cat.category_id}')">${cat.category_name}</button>`
+            ).join('');
+        }
+
+        async function selectCategory(btn, categoryId) {
+            currentCategory = categoryId;
+            document.querySelectorAll('.category-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            
+            if (currentTab === 'movies') {
+                loadMoviesByCategory(categoryId);
+            } else {
+                loadSeriesByCategory(categoryId);
+            }
+        }
+
+        async function loadMoviesByCategory(categoryId) {
+            document.getElementById('loading').classList.remove('hidden');
+            const data = await fetchAPI(`action=get_vod_streams&category_id=${categoryId}`);
+            allItems = data;
+            renderMovieCards(data);
+            document.getElementById('loading').classList.add('hidden');
+        }
+
+        async function loadSeriesByCategory(categoryId) {
+            document.getElementById('loading').classList.remove('hidden');
+            const data = await fetchAPI(`action=get_series&category_id=${categoryId}`);
+            allItems = data;
+            renderSeriesCards(data);
+            document.getElementById('loading').classList.add('hidden');
+        }
+
+        function renderMovieCards(movies) {
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = movies.map(m => `
+                <div class="card" onclick="playMovie('${m.stream_id}', '${m.name.replace(/'/g, "\\'")}')">
+                    <img src="${m.stream_icon || 'https://via.placeholder.com/300x400?text=Sem+Imagem'}" alt="${m.name}">
+                    <div class="card-info">
+                        <h3>${m.name}</h3>
+                        <p>⭐ ${m.rating || 'N/A'}</p>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function renderSeriesCards(series) {
+            const grid = document.getElementById('contentGrid');
+            grid.innerHTML = series.map(s => `
+                <div class="card" onclick="playSeries('${s.series_id}', '${s.name.replace(/'/g, "\\'")}')">
+                    <img src="${s.cover || 'https://via.placeholder.com/300x400?text=Sem+Imagem'}" alt="${s.name}">
+                    <div class="card-info">
+                        <h3>${s.name}</h3>
+                        <p>🎬 ${s.genre || ''}</p>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function playMovie(streamId, title) {
+            document.getElementById('mainPage').classList.add('hidden');
+            document.getElementById('playerPage').classList.remove('hidden');
+            document.getElementById('playerTitle').textContent = title;
+            document.getElementById('episodesList').innerHTML = '';
+
+            const videoUrl = `/movie/${U}/${P}/${streamId}.mp4`;
+            const player = document.getElementById('videoPlayer');
+            player.src = videoUrl;
+            player.play();
+        }
+
+        async function playSeries(seriesId, title) {
+            currentSeriesId = seriesId;
+            const data = await fetchAPI(`action=get_series_info&series_id=${seriesId}`);
+            
+            document.getElementById('mainPage').classList.add('hidden');
+            document.getElementById('playerPage').classList.remove('hidden');
+            document.getElementById('playerTitle').textContent = title;
+
+            if (data.episodes && data.episodes.length > 0) {
+                renderEpisodes(data.episodes);
+                loadEpisode(data.episodes[0].id);
+            }
+        }
+
+        function renderEpisodes(episodes) {
+            const container = document.getElementById('episodesList');
+            container.innerHTML = episodes.map((ep, i) => `
+                <button class="episode-btn ${i === 0 ? 'active' : ''}" onclick="loadEpisode('${ep.id}', this)">
+                    Ep. ${ep.episode_num}: ${ep.title}
+                </button>
+            `).join('');
+        }
+
+        function loadEpisode(episodeId, btn) {
+            if (btn) {
+                document.querySelectorAll('.episode-btn').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+            }
+            
+            const videoUrl = `/series/${U}/${P}/${episodeId}.mp4`;
+            const player = document.getElementById('videoPlayer');
+            player.src = videoUrl;
+            player.play();
+        }
+
+        function goBack() {
+            document.getElementById('playerPage').classList.add('hidden');
+            document.getElementById('mainPage').classList.remove('hidden');
+            document.getElementById('videoPlayer').src = '';
+        }
+
+        function filterItems() {
+            const search = document.getElementById('searchBox').value.toLowerCase();
+            const filtered = allItems.filter(item => 
+                item.name.toLowerCase().includes(search) || 
+                (item.title && item.title.toLowerCase().includes(search))
+            );
+            
+            if (currentTab === 'movies') {
+                renderMovieCards(filtered);
+            } else {
+                renderSeriesCards(filtered);
+            }
+        }
+    </script>
+</body>
+</html>
