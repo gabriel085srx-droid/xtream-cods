@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxy Status - Token Rotativo</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', system-ui, sans-serif;
+            background: #0a0a0f;
+            color: #e0e0e0;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        .container { max-width: 800px; width: 100%; }
+        .header { text-align: center; padding: 30px 0; }
+        .header h1 { font-size: 2rem; background: linear-gradient(135deg, #00c6ff, #0072ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+        .header p { color: #888; margin-top: 8px; }
+        .card {
+            background: #141420;
+            border: 1px solid #2a2a3a;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 15px 0;
+        }
+        .card-title { font-weight: 600; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+        .badge-hidden   { background: #00c85120; color: #00c851; }
+        .badge-checking { background: #ffaa0020; color: #ffaa00; }
+        .badge-success  { background: #00c85120; color: #00c851; }
+        .badge-error    { background: #ff444420; color: #ff4444; }
+        .badge-warning  { background: #ff880020; color: #ff8800; }
+        .url-box {
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 8px;
+            padding: 12px 15px;
+            font-family: 'Fira Code', monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            margin: 8px 0;
+        }
+        .url-box.original { border-left: 3px solid #ff4444; }
+        .url-box.proxied  { border-left: 3px solid #00c851; }
+        .url-box.internal { border-left: 3px solid #ff8800; }
+        .label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #888;
+            margin-bottom: 4px;
+        }
+        video {
+            width: 100%;
+            max-width: 500px;
+            border-radius: 8px;
+            background: #000;
+            margin-top: 10px;
+        }
+        .check-btn {
+            background: linear-gradient(135deg, #00c6ff, #0072ff);
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: opacity 0.2s;
+        }
+        .check-btn:hover { opacity: 0.85; }
+        .log-entry {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.8rem;
+            padding: 6px 0;
+            border-bottom: 1px solid #1a1a2e;
+        }
+        .log-time { color: #666; }
+        .log-ok    { color: #00c851; }
+        .log-err   { color: #ff4444; }
+        .log-info  { color: #0072ff; }
+        .log-warn  { color: #ff8800; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔒 Proxy com Token Rotativo</h1>
+            <p>Segue redirecionamento e protege a fonte real</p>
+        </div>
+
+        <div class="card">
+            <div class="card-title">🔗 Cadeia de URLs (Todas Ocultas)</div>
+            
+            <div class="label">1️⃣ URL Pública (usuário vê)</div>
+            <div class="url-box proxied" id="publicUrl">
+                /video/4161233.mp4
+            </div>
+
+            <div class="label" style="margin-top:10px;">2️⃣ Servidor Proxy (interno)</div>
+            <div class="url-box internal">
+                /api/video?path=4161233.mp4
+            </div>
+
+            <div class="label" style="margin-top:10px;">3️⃣ Fonte com Redirecionamento (oculta)</div>
+            <div class="url-box original">
+                elitep2p.site → redireciona para CDN com token
+            </div>
+
+            <div class="label" style="margin-top:10px;">4️⃣ CDN Final (token temporário, oculta)</div>
+            <div class="url-box original">
+                fontedosfilmes.cdnturbo.shop/t/TOKEN...
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-title" style="justify-content: space-between;">
+                <span>📡 Status</span>
+                <span class="badge badge-checking" id="statusBadge">VERIFICANDO</span>
+            </div>
+            <div id="logContainer">
+                <div class="log-entry">
+                    <span class="log-time">[--:--:--]</span> 
+                    <span class="log-info">⏳ Aguardando teste...</span>
+                </div>
+            </div>
+            <button class="check-btn" onclick="testProxy()" style="margin-top:10px;">🔄 Testar Agora</button>
+        </div>
+
+        <div class="card">
+            <div class="card-title">▶️ Player de Teste</div>
+            <video id="videoPlayer" controls preload="none" style="width:100%;max-width:600px;">
+                Seu navegador não suporta vídeo.
+            </video>
+            <div id="playerStatus" style="margin-top:8px;font-size:0.85rem;"></div>
+        </div>
+
+        <div class="card">
+            <div class="card-title">⚠️ Informações Importantes</div>
+            <p style="font-size:0.85rem;color:#888;">
+                🔄 Tokens expiram periodicamente<br>
+                ⏱️ Se o vídeo travar, recarregue a página<br>
+                🔒 Nenhuma URL real é exposta ao cliente<br>
+                📊 Essa função consome recursos do plano (Hobby: 100GB/mês)
+            </p>
+        </div>
+    </div>
+
+    <script>
+        const VIDEO_PATH = '4161233.mp4';
+        const PUBLIC_URL = `${window.location.origin}/video/${VIDEO_PATH}`;
+
+        document.getElementById('publicUrl').textContent = PUBLIC_URL;
+
+        function log(msg, type = 'info') {
+            const container = document.getElementById('logContainer');
+            const time = new Date().toLocaleTimeString();
+            const icons = { ok: '✅', err: '❌', warn: '⚠️', info: '📋' };
+            const classes = { ok: 'log-ok', err: 'log-err', warn: 'log-warn', info: 'log-info' };
+            
+            container.innerHTML += `
+                <div class="log-entry">
+                    <span class="log-time">[${time}]</span> 
+                    <span class="${classes[type]}">${icons[type]} ${msg}</span>
+                </div>
+            `;
+        }
+
+        async function testProxy() {
+            document.getElementById('logContainer').innerHTML = '';
+            document.getElementById('statusBadge').textContent = 'VERIFICANDO';
+            document.getElementById('statusBadge').className = 'badge badge-checking';
+
+            log('Iniciando teste do proxy...', 'info');
+            log(`URL pública: ${PUBLIC_URL}`, 'info');
+
+            // Teste 1: HEAD request
+            try {
+                log('Testando HEAD request...', 'info');
+                const headRes = await fetch(PUBLIC_URL, { method: 'HEAD' });
+                log(`HEAD status: ${headRes.status}`, headRes.ok ? 'ok' : 'warn');
+                
+                if (headRes.ok) {
+                    log(`Content-Type: ${headRes.headers.get('content-type') || 'N/D'}`, 'info');
+                    log(`Content-Length: ${headRes.headers.get('content-length') || 'N/D'}`, 'info');
+                }
+            } catch (e) {
+                log(`HEAD falhou: ${e.message}`, 'err');
+            }
+
+            // Teste 2: Range request (streaming)
+            try {
+                log('Testando Range request (streaming)...', 'info');
+                const rangeRes = await fetch(PUBLIC_URL, {
+                    headers: { 'Range': 'bytes=0-524287' }
+                });
+                
+                if (rangeRes.status === 206) {
+                    log('Range request OK (206) - Streaming funcionando!', 'ok');
+                } else {
+                    log(`Range retornou ${rangeRes.status}`, 'warn');
+                }
+            } catch (e) {
+                log(`Range test falhou: ${e.message}`, 'err');
+            }
+
+            // Carrega no player
+            const video = document.getElementById('videoPlayer');
+            const playerStatus = document.getElementById('playerStatus');
+            
+            video.innerHTML = '';
+            const source = document.createElement('source');
+            source.src = PUBLIC_URL;
+            source.type = 'video/mp4';
+            video.appendChild(source);
+            
+            video.onloadedmetadata = () => {
+                log(`Player: Vídeo carregado! Duração: ${video.duration.toFixed(1)}s`, 'ok');
+                playerStatus.innerHTML = '<span style="color:#00c851;">✅ Vídeo pronto para tocar</span>';
+                document.getElementById('statusBadge').textContent = 'ONLINE';
+                document.getElementById('statusBadge').className = 'badge badge-success';
+            };
+            
+            video.onerror = () => {
+                const msg = video.error ? video.error.message : 'Erro desconhecido';
+                log(`Player: ${msg}`, 'err');
+                playerStatus.innerHTML = `<span style="color:#ff4444;">❌ ${msg}</span>`;
+                document.getElementById('statusBadge').textContent = 'ERRO';
+                document.getElementById('statusBadge').className = 'badge badge-error';
+            };
+            
+            video.load();
+        }
+
+        window.onload = () => setTimeout(testProxy, 500);
+    </script>
+</body>
+</html>
