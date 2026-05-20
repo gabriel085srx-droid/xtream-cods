@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Proxy</title>
+</head>
+<body>
+    <video id="v" controls width="600"></video>
+    <div id="log" style="font-family:monospace;margin-top:10px;"></div>
+
+    <script>
+        (async function() {
+            const logEl = document.getElementById('log');
+            const videoEl = document.getElementById('v');
+            const videoPath = '4161233.mp4';
+            
+            // URL pública que o usuário vê
+            const publicUrl = `/video/${videoPath}`;
+            
+            log('🔄 Buscando vídeo...', 'blue');
+            
+            try {
+                // Faz a requisição proxy
+                const response = await fetch(publicUrl);
+                
+                if (!response.ok) {
+                    log(`❌ Erro HTTP: ${response.status}`, 'red');
+                    // Tenta direto pra ver se a fonte funciona
+                    log('🔍 Testando fonte direta...', 'orange');
+                    const direct = await fetch(`https://elitep2p.site/movie/primeapi-vods/217711411/${videoPath}`, { redirect: 'follow' });
+                    log(`📡 Fonte direta: ${direct.status} (${direct.headers.get('content-type') || 'sem tipo'})`, 'orange');
+                    return;
+                }
+                
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                videoEl.src = url;
+                log('✅ Vídeo carregado via proxy!', 'green');
+                log(`🔒 URL real: OCULTA`, 'green');
+                log(`👁️ URL visível: ${publicUrl}`, 'green');
+                
+            } catch (e) {
+                log(`💀 Erro: ${e.message}`, 'red');
+            }
+            
+            function log(msg, color) {
+                logEl.innerHTML += `<div style="color:${color};padding:3px 0;">${msg}</div>`;
+            }
+        })();
+    </script>
+</body>
+</html>
