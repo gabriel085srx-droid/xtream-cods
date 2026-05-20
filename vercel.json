@@ -1,0 +1,14 @@
+{
+  "functions": {
+    "video-proxy.js": {
+      "memory": 512,
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/video/:path*",
+      "destination": "/video-proxy?path=:path*"
+    }
+  ]
+}
