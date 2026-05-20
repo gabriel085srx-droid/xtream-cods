@@ -1,8 +1,0 @@
-{
-  "rewrites": [
-    {
-      "source": "/video/:path*",
-      "destination": "/video-proxy?path=:path*"
-    }
-  ]
-}
