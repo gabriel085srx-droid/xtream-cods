@@ -1,8 +1,0 @@
-{
-  "rewrites": [
-    {
-      "source": "/video/:path*",
-      "destination": "https://elitep2p.site/movie/primeapi-vods/217711411/:path*"
-    }
-  ]
-}
