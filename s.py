@@ -10,33 +10,33 @@ import json
 import threading
 from datetime import datetime
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor
+import psutil
+import random
 
 # ============ CONFIGURAÇÕES ============
-# COLOQUE AQUI SEU TOKEN DO BOT E SEU CHAT ID
-BOT_TOKEN = "8858026333:AAHc5SzjaRTCA6CaOjkHJ_Mvr1yYuSMVRKI"  # Ex: "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
-CHAT_ID = "8130788079"  # Ex: "123456789"
+BOT_TOKEN = "8858026333:AAHc5SzjaRTCA6CaOjkHJ_Mvr1yYuSMVRKI"
+CHAT_ID = "8130788079"
 
 # Configurações dos serviços
 SERVIDORES = [
-    {"nome": "Site Principal", "url": "http://localhost:8081", "porta": 8081, "comando_iniciar": "python3 -m http.server 8081"},
-    {"nome": "Site Michel", "url": "http://localhost:8082", "porta": 8082, "comando_iniciar": "python3 -m http.server 8082"}
+    {"nome": "Site Principal", "url": "http://localhost:8081", "porta": 8081, "dir": "/sdcard/download/painel"},
+    {"nome": "Site Michel", "url": "http://localhost:8082", "porta": 8082, "dir": "/sdcard/download/public"}
 ]
 
-# Intervalo de verificação normal (segundos)
-INTERVALO_VERIFICACAO = 10  # Verifica a cada 10 segundos
-# Intervalo de reconexão rápida (milissegundos)
-RECONEXAO_RAPIDA_INTERVALO_MS = 500 # Tenta reconectar a cada 500ms
-
+# Intervalo de verificação (segundos)
+INTERVALO_VERIFICACAO = 10  # Reduzido para 10 segundos
+INTERVALO_RECONEXAO = 2  # Tenta reconectar a cada 2 segundos
+TEMPO_MAXIMO_OFFLINE = 30  # Tempo máximo offline antes de alerta crítico
 # =======================================
 
-processos = []
+processos = {}
 nomes_processos = {}
 ultimo_alerta = {}
 bot_ativo = False
 verificacao_ativa = True
-
-# Lock para acesso seguro a variaveis globais (processos, nomes_processos)
-process_lock = threading.Lock()
+executor = ThreadPoolExecutor(max_workers=10)
+fila_reconexao = []
 
 class TelegramBot:
     def __init__(self, token, chat_id):
@@ -82,7 +82,6 @@ class TelegramBot:
     
     def processar_comandos(self, message):
         """Processa comandos recebidos"""
-        global verificacao_ativa
         if not message:
             return
         
@@ -90,41 +89,31 @@ class TelegramBot:
         texto = message.get("text", "")
         user = message["from"]["first_name"]
         
-        # Só responde se for o chat autorizado
         if str(chat_id) != str(self.chat_id):
             self.enviar_mensagem_para(chat_id, "⛔ Acesso não autorizado!")
             return
         
         if texto.startswith("/ping"):
             self.comando_ping()
-        
         elif texto.startswith("/status"):
             self.comando_status()
-        
         elif texto.startswith("/servicos"):
             self.comando_listar_servicos()
-        
         elif texto.startswith("/log"):
             self.comando_log()
-        
         elif texto.startswith("/ajuda") or texto.startswith("/help"):
             self.comando_ajuda()
-        
         elif texto.startswith("/speed"):
             self.comando_speedtest()
-        
-        elif texto.startswith("/reiniciar"):
-            args = texto.split()
-            if len(args) > 1:
-                self.comando_reiniciar_servico(args[1])
-            else:
-                self.enviar_mensagem("❌ Use: /reiniciar <nome_do_serviço>")
-        
         elif texto.startswith("/parar"):
-            self.enviar_mensagem("🛑 Recebido comando /parar. Encerrando todos os serviços e o monitoramento...")
-            verificacao_ativa = False # Sinaliza para as threads pararem
-            limpar_processos(None, None) # Chama a função de limpeza
-            
+            self.comando_parar()
+        elif texto.startswith("/reiniciar"):
+            self.comando_reiniciar_sistema()
+        elif texto.startswith("/forcar_reconexao"):
+            self.comando_forcar_reconexao()
+        elif texto.startswith("/processos"):
+            self.comando_listar_processos()
+    
     def enviar_mensagem_para(self, chat_id, texto):
         """Envia mensagem para um chat específico"""
         try:
@@ -137,6 +126,46 @@ class TelegramBot:
             requests.post(url, json=payload, timeout=10)
         except:
             pass
+    
+    def comando_parar(self):
+        """Comando /parar - Para todo o sistema"""
+        global verificacao_ativa
+        mensagem = "🛑 <b>DESLIGANDO SISTEMA...</b>\n\n"
+        mensagem += f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
+        mensagem += "⚠️ Todos os serviços serão encerrados!"
+        self.enviar_mensagem(mensagem)
+        
+        # Para o sistema após enviar a mensagem
+        threading.Thread(target=lambda: (time.sleep(1), limpar_processos()), daemon=True).start()
+    
+    def comando_reiniciar_sistema(self):
+        """Comando /reiniciar - Reinicia todo o sistema"""
+        mensagem = "🔄 <b>REINICIANDO SISTEMA...</b>\n\n"
+        mensagem += "✅ Todos os serviços serão reiniciados!"
+        self.enviar_mensagem(mensagem)
+        
+        threading.Thread(target=reiniciar_todos_servicos, daemon=True).start()
+    
+    def comando_forcar_reconexao(self):
+        """Comando /forcar_reconexao - Força reconexão de todos serviços"""
+        mensagem = "🔄 <b>FORÇANDO RECONEXÃO DE TODOS SERVIÇOS</b>\n\n"
+        mensagem += "⏳ Tentando reconectar todos os serviços..."
+        self.enviar_mensagem(mensagem)
+        
+        threading.Thread(target=forcar_reconexao_todos, daemon=True).start()
+    
+    def comando_listar_processos(self):
+        """Comando /processos - Lista todos os processos ativos"""
+        mensagem = "📊 <b>PROCESSOS ATIVOS</b>\n\n"
+        
+        for nome, proc in processos.items():
+            if proc and proc.poll() is None:
+                mensagem += f"✅ {nome}: PID {proc.pid}\n"
+            else:
+                mensagem += f"❌ {nome}: INATIVO\n"
+        
+        mensagem += f"\n📈 Total de processos ativos: {sum(1 for p in processos.values() if p and p.poll() is None)}"
+        self.enviar_mensagem(mensagem)
     
     def comando_ping(self):
         """Comando /ping - Verifica velocidade dos sites"""
@@ -156,24 +185,20 @@ class TelegramBot:
                     tamanho = len(response.content)
                     mensagem += f"✅ <b>{nome}</b>\n"
                     mensagem += f"   ⚡ Resposta: {tempo:.0f}ms\n"
-                    mensagem += f"   📦 Tamanho: {tamanho} bytes\n"
-                    mensagem += f"   🔗 URL: {url}\n\n"
+                    mensagem += f"   📦 Tamanho: {tamanho} bytes\n\n"
                 else:
                     mensagem += f"⚠️ <b>{nome}</b>\n"
                     mensagem += f"   Status HTTP: {response.status_code}\n\n"
             except requests.exceptions.Timeout:
                 mensagem += f"❌ <b>{nome}</b>\n"
-                mensagem += f"   ⏰ Timeout (5s) - Servidor não respondeu\n"
-                mensagem += f"   🔌 Porta {porta} pode estar fechada\n\n"
+                mensagem += f"   ⏰ Timeout (5s)\n\n"
             except requests.exceptions.ConnectionError:
                 mensagem += f"❌ <b>{nome}</b>\n"
-                mensagem += f"   🔌 Conexão recusada - Servidor offline\n"
-                mensagem += f"   🚫 Porta {porta} não está ouvindo\n\n"
+                mensagem += f"   🔌 Conexão recusada\n\n"
             except Exception as e:
                 mensagem += f"❌ <b>{nome}</b>\n"
                 mensagem += f"   Erro: {str(e)[:100]}\n\n"
         
-        # Verifica internet geral
         try:
             inicio = time.time()
             response = requests.get("https://www.google.com", timeout=5)
@@ -190,34 +215,34 @@ class TelegramBot:
     def comando_status(self):
         """Comando /status - Status detalhado"""
         mensagem = "📊 <b>STATUS DO SISTEMA</b>\n\n"
-        mensagem += f"🕐 {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}\n\n"
+        mensagem += f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n"
         
-        # Status dos serviços
         for servidor in SERVIDORES:
             nome = servidor["nome"]
             url = servidor["url"]
+            proc = processos.get(nome)
             
-            try:
-                response = requests.get(url, timeout=5)
-                if response.status_code == 200:
-                    mensagem += f"✅ {nome}: ONLINE\n"
-                else:
-                    mensagem += f"⚠️ {nome}: Status {response.status_code}\n"
-            except:
+            if proc and proc.poll() is None:
+                try:
+                    response = requests.get(url, timeout=3)
+                    if response.status_code == 200:
+                        mensagem += f"✅ {nome}: ONLINE (PID {proc.pid})\n"
+                    else:
+                        mensagem += f"⚠️ {nome}: ERRO HTTP {response.status_code}\n"
+                except:
+                    mensagem += f"⚠️ {nome}: ONLINE MAS NÃO RESPONDE\n"
+            else:
                 mensagem += f"❌ {nome}: OFFLINE\n"
         
-        # Status do Cloudflare
         cloudflare_status = verificar_cloudflare()
         mensagem += f"\n{'✅' if cloudflare_status else '❌'} Cloudflare Tunnel: "
         mensagem += f"{'ATIVO' if cloudflare_status else 'INATIVO'}\n"
         
-        # Status do WakeLock
         mensagem += f"✅ WakeLock: ATIVO\n"
         
-        # Verifica processos
-        with process_lock:
-            processos_ativos = sum(1 for p in processos if p.poll() is None)
-            mensagem += f"\n📈 Processos ativos: {processos_ativos}/{len(processos)}"
+        processos_ativos = sum(1 for p in processos.values() if p and p.poll() is None)
+        mensagem += f"\n📈 Processos ativos: {processos_ativos}/{len(processos)}\n"
+        mensagem += f"🔍 Monitoramento: ATIVO (intervalo: {INTERVALO_VERIFICACAO}s)"
         
         self.enviar_mensagem(mensagem)
     
@@ -228,10 +253,15 @@ class TelegramBot:
         for i, servidor in enumerate(SERVIDORES, 1):
             mensagem += f"{i}. <b>{servidor['nome']}</b>\n"
             mensagem += f"   📍 URL: {servidor['url']}\n"
-            mensagem += f"   🔌 Porta: {servidor['porta']}\n\n"
+            mensagem += f"   🔌 Porta: {servidor['porta']}\n"
+            mensagem += f"   📁 Dir: {servidor['dir']}\n\n"
         
-        mensagem += "💡 Use /ping para testar velocidade\n"
-        mensagem += "💡 Use /status para verificar status"
+        mensagem += "💡 Comandos disponíveis:\n"
+        mensagem += "/ping - Testar velocidade\n"
+        mensagem += "/status - Status completo\n"
+        mensagem += "/parar - Parar sistema\n"
+        mensagem += "/reiniciar - Reiniciar sistema\n"
+        mensagem += "/forcar_reconexao - Forçar reconexão"
         
         self.enviar_mensagem(mensagem)
     
@@ -246,7 +276,8 @@ class TelegramBot:
             status_emoji = "✅" if info["status"] == "online" else "❌"
             mensagem += f"{status_emoji} <b>{servico}</b>\n"
             mensagem += f"   Status: {info['status']}\n"
-            mensagem += f"   Última mudança: {info['timestamp']}\n\n"
+            mensagem += f"   Última mudança: {info['timestamp']}\n"
+            mensagem += f"   Reconexões: {info.get('reconexoes', 0)}x\n\n"
         
         self.enviar_mensagem(mensagem)
     
@@ -254,30 +285,36 @@ class TelegramBot:
         """Comando /ajuda - Lista comandos"""
         mensagem = """🤖 <b>COMANDOS DISPONÍVEIS</b>
 
+📊 <b>Informação:</b>
 /ping - Testar velocidade dos sites
 /status - Status completo do sistema
 /servicos - Listar serviços configurados
 /log - Últimos alertas do sistema
+/processos - Listar processos ativos
 /speed - Testar velocidade da internet
-/reiniciar <nome_do_serviço> - Reinicia um serviço específico
-/parar - Encerrar todos os serviços e o monitoramento
+
+🛠️ <b>Controle:</b>
+/parar - Para todo o sistema
+/reiniciar - Reinicia todos os serviços
+/forcar_reconexao - Força reconexão imediata
+
+ℹ️ <b>Outros:</b>
 /ajuda - Mostrar esta mensagem
 
 🚨 <b>Alertas automáticos:</b>
 • Serviços offline/online
 • Quedas de internet
 • Falhas no Cloudflare
-• Erros críticos do sistema"""
+• Reconexão automática em ms"""
         
         self.enviar_mensagem(mensagem)
     
     def comando_speedtest(self):
-        """Comando /speed - Teste de velocidade simples"""
-        self.enviar_mensagem("⏳ Iniciando teste de velocidade... (pode levar 30s)")
+        """Comando /speed - Teste de velocidade"""
+        self.enviar_mensagem("⏳ Iniciando teste de velocidade...")
         
         mensagem = "🚀 <b>TESTE DE VELOCIDADE</b>\n\n"
         
-        # Teste de download
         try:
             inicio = time.time()
             response = requests.get("https://speed.cloudflare.com/__down?bytes=5000000", timeout=30)
@@ -288,7 +325,6 @@ class TelegramBot:
         except:
             mensagem += f"📥 <b>Download:</b> ❌ Falhou\n"
         
-        # Teste de latência
         try:
             latencias = []
             for _ in range(3):
@@ -303,67 +339,6 @@ class TelegramBot:
             mensagem += f"📡 <b>Latência:</b> ❌ Falhou"
         
         self.enviar_mensagem(mensagem)
-    
-    def comando_reiniciar_servico(self, nome_servico):
-        """Comando /reiniciar - Reinicia um serviço específico"""
-        self.enviar_mensagem(f"⏳ Reiniciando {nome_servico}...")
-        
-        with process_lock:
-            if nome_servico in nomes_processos:
-                processo_info = nomes_processos[nome_servico]
-                processo = processo_info["processo"]
-                comando = processo_info["comando"]
-                
-                if processo.poll() is None: # Se o processo ainda estiver rodando
-                    print(f"Encerrando processo existente para {nome_servico}...")
-                    processo.terminate()
-                    processo.wait(timeout=5)
-                
-                print(f"Iniciando {nome_servico} novamente com o comando: {comando}")
-                novo_processo = subprocess.Popen(comando, shell=True, preexec_fn=os.setsid, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                processo_info["processo"] = novo_processo
-                self.enviar_mensagem(f"✅ {nome_servico} reiniciado com sucesso!")
-            else:
-                self.enviar_mensagem(f"❌ Serviço '{nome_servico}' não encontrado para reiniciar.")
-        
-        time.sleep(2)
-        self.comando_status()
-
-def iniciar_processo(nome, comando):
-    """Inicia um processo e o adiciona à lista global"""
-    global processos, nomes_processos
-    try:
-        # Usamos os.setsid para criar um novo grupo de processo, o que ajuda a garantir que o processo filho
-        # não seja encerrado quando o processo pai receber um SIGINT (Ctrl+C), a menos que o pai o encerre explicitamente.
-        processo = subprocess.Popen(comando, shell=True, preexec_fn=os.setsid, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        with process_lock:
-            processos.append(processo)
-            nomes_processos[nome] = {"processo": processo, "comando": comando}
-        print(f"✅ Processo '{nome}' iniciado com PID: {processo.pid}")
-        return True
-    except Exception as e:
-        print(f"❌ Erro ao iniciar processo '{nome}': {e}")
-        return False
-
-def iniciar_termux_wakelock():
-    return iniciar_processo("Termux WakeLock", "termux-wake-lock")
-
-def iniciar_cloudflared():
-    return iniciar_processo("Cloudflared Tunnel", "cloudflared tunnel run --url http://localhost:8080") # Exemplo, ajuste a porta se necessário
-
-def iniciar_site_principal():
-    # Pega o comando de iniciar do SERVIDORES
-    comando = next((s["comando_iniciar"] for s in SERVIDORES if s["nome"] == "Site Principal"), None)
-    if comando:
-        return iniciar_processo("Site Principal", comando)
-    return False
-
-def iniciar_site_michel():
-    # Pega o comando de iniciar do SERVIDORES
-    comando = next((s["comando_iniciar"] for s in SERVIDORES if s["nome"] == "Site Michel" ), None)
-    if comando:
-        return iniciar_processo("Site Michel", comando)
-    return False
 
 def verificar_cloudflare():
     """Verifica se o túnel Cloudflare está rodando"""
@@ -371,273 +346,384 @@ def verificar_cloudflare():
         result = subprocess.run(
             ["pgrep", "-f", "cloudflared"],
             capture_output=True,
-            text=True,
-            check=False # Não levanta exceção para código de saída diferente de zero
+            text=True
         )
         return bool(result.stdout.strip())
     except:
         return False
 
-def limpar_processos(signum, frame):
-    """Encerra todos os processos filhos iniciados e o wakelock"""
-    global verificacao_ativa
-    print("\n🛑 Sinal de encerramento recebido. Encerrando processos...")
-    verificacao_ativa = False # Garante que as threads de monitoramento parem
-    
-    with process_lock:
-        for nome, info in nomes_processos.items():
-            p = info["processo"]
-            if p.poll() is None:  # Se o processo ainda estiver rodando
-                print(f"Encerrando {nome} (PID: {p.pid})...")
-                try:
-                    # Envia SIGTERM para o processo
-                    os.killpg(os.getpgid(p.pid), signal.SIGTERM)
-                    p.wait(timeout=5) # Espera o processo terminar
-                except ProcessLookupError:
-                    print(f"Processo {nome} (PID: {p.pid}) já encerrado.")
-                except subprocess.TimeoutExpired:
-                    print(f"Processo {nome} (PID: {p.pid}) não respondeu, forçando encerramento.")
-                    os.killpg(os.getpgid(p.pid), signal.SIGKILL)
-                    p.wait()
-                except Exception as e:
-                    print(f"Erro ao encerrar {nome}: {e}")
-            else:
-                print(f"Processo {nome} (PID: {p.pid}) já estava encerrado.")
-        processos.clear()
-        nomes_processos.clear()
-
+def iniciar_servico_php(nome, diretorio, porta):
+    """Inicia um serviço PHP e retorna o processo"""
     try:
-        subprocess.run(["termux-wake-unlock"], 
-                      stdout=subprocess.DEVNULL, 
-                      stderr=subprocess.DEVNULL,
-                      check=False)
-        print("✓ Wakelock liberado")
+        if not os.path.exists(diretorio):
+            print(f"✗ Diretório {diretorio} não encontrado!")
+            return None
+        
+        os.chdir(diretorio)
+        
+        # Mata processos antigos na porta
+        subprocess.run(f"fuser -k {porta}/tcp", shell=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        time.sleep(0.5)
+        
+        proc = subprocess.Popen(
+            ["php", "-S", f"localhost:{porta}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Aguarda o serviço iniciar
+        time.sleep(1)
+        
+        # Verifica se o serviço está respondendo
+        for _ in range(5):
+            try:
+                response = requests.get(f"http://localhost:{porta}", timeout=2)
+                if response.status_code == 200:
+                    print(f"✓ {nome} iniciado em localhost:{porta}")
+                    return proc
+            except:
+                time.sleep(0.5)
+        
+        print(f"⚠️ {nome} iniciado mas não responde ainda")
+        return proc
+    except Exception as e:
+        print(f"✗ Erro ao iniciar {nome}: {e}")
+        return None
+
+def iniciar_cloudflared():
+    """Inicia o túnel Cloudflare"""
+    try:
+        # Mata processos antigos do cloudflared
+        subprocess.run(["pkill", "-f", "cloudflared"], stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+        time.sleep(0.5)
+        
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "run", "meutunel"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        print("✓ Cloudflared tunnel iniciado")
+        return proc
+    except Exception as e:
+        print(f"✗ Erro no cloudflared: {e}")
+        return None
+
+def iniciar_termux_wakelock():
+    """Mantém o Termux ativo"""
+    try:
+        subprocess.run(
+            ["termux-wake-lock"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False
+        )
+        print("✓ termux-wake-lock ativado")
+        return True
+    except Exception as e:
+        print(f"✗ Erro no termux-wake-lock: {e}")
+        return False
+
+def reconectar_servico(nome_servico, bot=None, forcar=False):
+    """Reconecta um serviço específico rapidamente"""
+    global ultimo_alerta
+    
+    if nome_servico not in [s["nome"] for s in SERVIDORES]:
+        return False
+    
+    servidor = next(s for s in SERVIDORES if s["nome"] == nome_servico)
+    
+    # Marca como reconectando
+    if nome_servico not in ultimo_alerta:
+        ultimo_alerta[nome_servico] = {"status": "offline", "timestamp": datetime.now().strftime('%d/%m/%Y %H:%M:%S'), "reconexoes": 0}
+    
+    ultimo_alerta[nome_servico]["reconexoes"] = ultimo_alerta[nome_servico].get("reconexoes", 0) + 1
+    
+    print(f"🔄 Tentando reconectar {nome_servico}... (tentativa {ultimo_alerta[nome_servico]['reconexoes']})")
+    
+    # Tenta reconectar
+    novo_proc = iniciar_servico_php(nome_servico, servidor["dir"], servidor["porta"])
+    
+    if novo_proc:
+        processos[nome_servico] = novo_proc
+        
+        # Envia alerta de reconexão
+        if bot:
+            bot.enviar_mensagem(
+                f"🔄 <b>{nome_servico} RECONECTADO!</b>\n"
+                f"⚡ Reconexão bem-sucedida\n"
+                f"📊 Tentativas: {ultimo_alerta[nome_servico]['reconexoes']}\n"
+                f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+            )
+        
+        ultimo_alerta[nome_servico]["status"] = "online"
+        ultimo_alerta[nome_servico]["timestamp"] = datetime.now().strftime('%d/%m/%Y %H:%M:%S')
+        return True
+    
+    return False
+
+def monitor_auto_reconexao(bot):
+    """Thread que monitora e reconecta serviços automaticamente"""
+    global verificacao_ativa
+    
+    ultimo_status = {}
+    tempo_offline = {}
+    
+    for servidor in SERVIDORES:
+        ultimo_status[servidor["nome"]] = True
+        tempo_offline[servidor["nome"]] = 0
+    
+    while verificacao_ativa:
+        for servidor in SERVIDORES:
+            nome = servidor["nome"]
+            url = servidor["url"]
+            proc = processos.get(nome)
+            
+            # Verifica se o processo está vivo
+            if not proc or proc.poll() is not None:
+                if ultimo_status[nome]:
+                    print(f"❌ {nome} caiu! Tentando reconectar...")
+                    ultimo_status[nome] = False
+                    tempo_offline[nome] = 0
+                    
+                    # Alerta de queda
+                    if bot:
+                        bot.enviar_mensagem(
+                            f"🚨 <b>{nome} CAIU!</b>\n"
+                            f"🔄 Iniciando reconexão automática...\n"
+                            f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+                        )
+                
+                # Tenta reconectar imediatamente
+                reconectar_servico(nome, bot)
+                tempo_offline[nome] += INTERVALO_RECONEXAO
+                
+                # Alerta crítico se ficou muito tempo offline
+                if tempo_offline[nome] >= TEMPO_MAXIMO_OFFLINE and bot:
+                    bot.enviar_mensagem(
+                        f"⚠️ <b>CRÍTICO: {nome} OFFLINE HÁ {TEMPO_MAXIMO_OFFLINE}s</b>\n"
+                        f"📊 Tentativas: {ultimo_alerta.get(nome, {}).get('reconexoes', 0)}\n"
+                        f"🔄 Verificando conexão de rede..."
+                    )
+            else:
+                # Processo está vivo, verifica se responde
+                try:
+                    response = requests.get(url, timeout=2)
+                    if response.status_code == 200:
+                        if not ultimo_status[nome]:
+                            # Voltou ao ar
+                            print(f"✅ {nome} restaurado!")
+                            ultimo_status[nome] = True
+                            tempo_offline[nome] = 0
+                            
+                            if bot:
+                                bot.enviar_mensagem(
+                                    f"✅ <b>{nome} RESTAURADO!</b>\n"
+                                    f"⚡ Serviço normalizado\n"
+                                    f"🕐 {datetime.now().strftime('%H:%M:%S')}"
+                                )
+                    else:
+                        # Processo vivo mas não responde
+                        if ultimo_status[nome]:
+                            print(f"⚠️ {nome} não responde (HTTP {response.status_code})")
+                            # Mata e reinicia
+                            if proc:
+                                proc.terminate()
+                                time.sleep(0.5)
+                            reconectar_servico(nome, bot)
+                except:
+                    # Não responde, mata e reinicia
+                    if ultimo_status[nome]:
+                        print(f"⚠️ {nome} não responde, reiniciando...")
+                        if proc:
+                            proc.terminate()
+                            time.sleep(0.5)
+                        reconectar_servico(nome, bot)
+        
+        # Verifica Cloudflare
+        if not verificar_cloudflare():
+            print("⚠️ Cloudflare Tunnel caiu, reiniciando...")
+            cloud_proc = iniciar_cloudflared()
+            if cloud_proc:
+                processos["Cloudflare"] = cloud_proc
+                if bot:
+                    bot.enviar_mensagem("🔄 Cloudflare Tunnel reiniciado!")
+        
+        time.sleep(INTERVALO_RECONEXAO)
+
+def forcar_reconexao_todos():
+    """Força reconexão de todos os serviços"""
+    for servidor in SERVIDORES:
+        nome = servidor["nome"]
+        print(f"🔄 Forçando reconexão de {nome}...")
+        reconectar_servico(nome, bot, forcar=True)
+        time.sleep(0.5)
+    
+    if bot:
+        bot.enviar_mensagem("✅ Todos os serviços foram reiniciados!")
+
+def reiniciar_todos_servicos():
+    """Reinicia todos os serviços do zero"""
+    global processos
+    
+    print("🔄 Reiniciando todos os serviços...")
+    
+    # Mata todos os processos
+    for nome, proc in processos.items():
+        if proc:
+            try:
+                proc.terminate()
+                time.sleep(0.3)
+            except:
+                pass
+    
+    time.sleep(1)
+    processos = {}
+    
+    # Reinicia serviços
+    iniciar_cloudflared()
+    time.sleep(0.5)
+    
+    for servidor in SERVIDORES:
+        proc = iniciar_servico_php(servidor["nome"], servidor["dir"], servidor["porta"])
+        if proc:
+            processos[servidor["nome"]] = proc
+        time.sleep(0.3)
+    
+    if bot:
+        bot.enviar_mensagem(
+            "✅ <b>SISTEMA REINICIADO COM SUCESSO!</b>\n"
+            f"🕐 {datetime.now().strftime('%H:%M:%S')}\n"
+            "🔄 Todos os serviços foram reiniciados"
+        )
+
+def limpar_processos(signum=None, frame=None):
+    """Finaliza todos os processos"""
+    global verificacao_ativa, bot_ativo
+    
+    print("\n🛑 Encerrando todos os serviços...")
+    verificacao_ativa = False
+    
+    if bot_ativo and BOT_TOKEN != "SEU_TOKEN_AQUI":
+        bot_temp = TelegramBot(BOT_TOKEN, CHAT_ID)
+        bot_temp.enviar_mensagem(
+            "🔴 <b>SISTEMA DESLIGADO</b>\n"
+            f"🕐 {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n"
+            "👋 Sistema encerrado via comando /parar"
+        )
+    
+    for nome, proc in processos.items():
+        try:
+            if proc:
+                proc.terminate()
+                proc.wait(timeout=2)
+                print(f"  ✓ {nome} encerrado")
+        except:
+            try:
+                if proc:
+                    proc.kill()
+            except:
+                pass
+    
+    try:
+        subprocess.run(["pkill", "-f", "cloudflared"])
+        subprocess.run(["termux-wake-unlock"])
+        print("✓ Limpeza concluída")
     except:
         pass
     
     print("✅ Todos os serviços foram encerrados")
     sys.exit(0)
 
-def monitorar_servicos(bot):
-    """Thread de monitoramento contínuo com reconexão rápida"""
-    global ultimo_alerta, verificacao_ativa
-    
-    print("\n👀 Monitoramento iniciado! Verificando a cada", INTERVALO_VERIFICACAO, "segundos...")
-    print("=" * 50)
-    
-    # Estado inicial
-    estados_anteriores = {}
-    for servidor in SERVIDORES:
-        estados_anteriores[servidor["nome"]] = None
-    cloudflare_anterior = None
-    
-    # Envia mensagem de inicialização
-    if bot:
-        bot.enviar_mensagem(
-            "🟢 <b>SISTEMA INICIADO</b>\n\n"
-            f"🕐 {datetime.now().strftime("%d/%m/%Y %H:%M:%S")}\n"
-            "📡 Monitoramento ativo\n"
-            "🔔 Alertas configurados"
-        )
-    
-    while verificacao_ativa:
-        try:
-            # Verifica cada servidor
-            for servidor in SERVIDORES:
-                nome = servidor["nome"]
-                url = servidor["url"]
-                comando_iniciar = servidor["comando_iniciar"]
-                
-                status_atual = "offline"
-                try:
-                    response = requests.get(url, timeout=5)
-                    status_atual = "online" if response.status_code == 200 else "problema"
-                except requests.exceptions.RequestException:
-                    status_atual = "offline"
-                
-                # Se mudou o estado
-                if estados_anteriores[nome] != status_atual:
-                    estados_anteriores[nome] = status_atual
-                    
-                    if status_atual == "online":
-                        mensagem = f"✅ <b>{nome} VOLTOU!</b>\n🕐 {datetime.now().strftime("%H:%M:%S")}\n🔗 {url}"
-                    elif status_atual == "offline":
-                        mensagem = f"🚨 <b>{nome} CAIU!</b>\n🕐 {datetime.now().strftime("%H:%M:%S")}\n🔗 {url}\n❌ Servidor não responde"
-                        # Tenta reiniciar o serviço imediatamente
-                        print(f"Tentando reiniciar o serviço '{nome}'...")
-                        iniciar_processo(nome, comando_iniciar) # Tenta iniciar novamente
-                        # Entra em modo de reconexão rápida
-                        tentativas = 0
-                        max_tentativas = int(INTERVALO_VERIFICACAO * 1000 / RECONEXAO_RAPIDA_INTERVALO_MS)
-                        while verificacao_ativa and status_atual == "offline" and tentativas < max_tentativas:
-                            time.sleep(RECONEXAO_RAPIDA_INTERVALO_MS / 1000)
-                            try:
-                                response = requests.get(url, timeout=2) # Timeout menor para reconexão rápida
-                                status_atual = "online" if response.status_code == 200 else "problema"
-                                if status_atual == "online":
-                                    print(f"✅ {nome} voltou durante a reconexão rápida!")
-                                    mensagem += f"\n✅ Reconectado em {tentativas * RECONEXAO_RAPIDA_INTERVALO_MS}ms"
-                                    break
-                            except requests.exceptions.RequestException:
-                                status_atual = "offline"
-                            tentativas += 1
-                        if status_atual == "offline":
-                            mensagem += f"\n❌ Não reconectado após {tentativas} tentativas."
-
-                    else:
-                        mensagem = f"⚠️ <b>{nome} COM PROBLEMA</b>\n🕐 {datetime.now().strftime("%H:%M:%S")}\n🔗 {url}"
-                    
-                    ultimo_alerta[nome] = {
-                        "status": status_atual,
-                        "timestamp": datetime.now().strftime("%d/%m/%Y %H:%M:%S")
-                    }
-                    
-                    print(f"{'✅' if status_atual == 'online' else '❌'} Alerta: {nome} - {status_atual}")
-                    
-                    if bot:
-                        bot.enviar_mensagem(mensagem)
-            
-            # Verifica se o processo filho ainda está rodando
-            with process_lock:
-                if nome in nomes_processos:
-                    p = nomes_processos[nome]["processo"]
-                    if p.poll() is not None: # Se o processo terminou
-                        print(f"⚠️ Processo '{nome}' (PID: {p.pid}) encerrou inesperadamente. Tentando reiniciar...")
-                        iniciar_processo(nome, comando_iniciar) # Tenta reiniciar
-                        if bot:
-                            bot.enviar_mensagem(f"⚠️ <b>{nome}</b> encerrou inesperadamente e foi reiniciado.")
-
-            
-            # Verifica Cloudflare
-            cf_status = verificar_cloudflare()
-            if cloudflare_anterior != cf_status:
-                cloudflare_anterior = cf_status
-                
-                if cf_status:
-                    mensagem = "✅ <b>Cloudflare Tunnel RECONECTADO!</b>"
-                else:
-                    mensagem = "🚨 <b>Cloudflare Tunnel CAIU!</b>\n⚠️ Sites externos inacessíveis"
-                
-                if bot:
-                    bot.enviar_mensagem(mensagem)
-                print(mensagem)
-            
-            # Verifica internet geral a cada 5 verificações
-            if int(time.time()) % (INTERVALO_VERIFICACAO * 5) < INTERVALO_VERIFICACAO:
-                try:
-                    requests.get("https://www.google.com", timeout=5)
-                except:
-                    if bot:
-                        bot.enviar_mensagem(
-                            "🌐 <b>ALERTA DE INTERNET</b>\n"
-                            "❌ Sem conexão com a internet"
-                        )
-                    print("🌐 ALERTA: Sem conexão com a internet!")
-            
-            # Pequena pausa para não sobrecarregar a CPU
-            time.sleep(0.1) # Pausa entre a verificação de cada serviço
-
-        except Exception as e:
-            print(f"❌ Erro crítico na thread de monitoramento: {e}")
-            if bot:
-                bot.enviar_mensagem(f"❌ Erro crítico no monitoramento: {e}")
-        
-        # Espera o intervalo de verificação, mas permite interrupção rápida
-        for _ in range(int(INTERVALO_VERIFICACAO * 1000 / RECONEXAO_RAPIDA_INTERVALO_MS)):
-            if not verificacao_ativa:
-                break
-            time.sleep(RECONEXAO_RAPIDA_INTERVALO_MS / 1000)
-
 def main():
-    global bot_ativo, verificacao_ativa
+    global bot_ativo, bot
     
-    print("=" * 60)
-    print("🚀 INICIANDO SISTEMA COMPLETO COM MONITORAMENTO")
-    print("=" * 60)
+    print("=" * 70)
+    print("🚀 INICIANDO SISTEMA ULTRA RESILIENTE COM AUTO-RECUPERAÇÃO")
+    print("=" * 70)
     print()
     
-    # Verifica configurações do bot
-    if BOT_TOKEN == "SEU_TOKEN_AQUI" or CHAT_ID == "SEU_CHAT_ID_AQUI":
-        print("⚠️  AVISO: Configure o TOKEN e CHAT_ID do Telegram!")
-        print("   Edite o script e adicione suas credenciais")
-        print()
-    
-    # Registra handlers para Ctrl+C e SIGTERM
     signal.signal(signal.SIGINT, limpar_processos)
     signal.signal(signal.SIGTERM, limpar_processos)
     
-    # Inicia serviços
     print("📡 Iniciando serviços...")
     print("-" * 50)
     
-    wakelock_ok = iniciar_termux_wakelock()
-    time.sleep(0.3)
-    
-    cloudflare_ok = iniciar_cloudflared()
+    iniciar_termux_wakelock()
     time.sleep(0.5)
     
-    # Inicia os sites configurados dinamicamente
+    # Inicia Cloudflare
+    cloud_proc = iniciar_cloudflared()
+    if cloud_proc:
+        processos["Cloudflare"] = cloud_proc
+    time.sleep(0.5)
+    
+    # Inicia serviços PHP
     for servidor in SERVIDORES:
-        iniciar_processo(servidor["nome"], servidor["comando_iniciar"])
-        time.sleep(0.3)
+        proc = iniciar_servico_php(servidor["nome"], servidor["dir"], servidor["porta"])
+        if proc:
+            processos[servidor["nome"]] = proc
+        time.sleep(0.5)
     
     print("-" * 50)
     print()
     
-    # Inicia bot Telegram
+    # Inicia bot
     bot = None
     if BOT_TOKEN != "SEU_TOKEN_AQUI" and CHAT_ID != "SEU_CHAT_ID_AQUI":
         bot = TelegramBot(BOT_TOKEN, CHAT_ID)
         bot_ativo = True
         print("🤖 Bot Telegram conectado!")
         
-        # Thread para receber comandos
-        def receber_comandos_thread():
+        def receber_comandos():
             while verificacao_ativa:
-                try:
-                    message = bot.get_updates()
-                    if message:
-                        bot.processar_comandos(message)
-                except Exception as e:
-                    print(f"❌ Erro na thread de comandos do bot: {e}")
-                time.sleep(1) # Pequena pausa para evitar loop muito apertado
+                message = bot.get_updates()
+                if message:
+                    bot.processar_comandos(message)
+                time.sleep(1)
         
-        thread_comandos = threading.Thread(target=receber_comandos_thread, daemon=True)
+        thread_comandos = threading.Thread(target=receber_comandos, daemon=True)
         thread_comandos.start()
-    else:
-        print("⚠️  Bot Telegram não configurado - monitoramento sem alertas")
     
-    # Thread de monitoramento
+    # Inicia monitoramento de reconexão
     thread_monitor = threading.Thread(
-        target=monitorar_servicos, 
-        args=(bot,), 
+        target=monitor_auto_reconexao,
+        args=(bot,),
         daemon=True
     )
     thread_monitor.start()
     
-    # Status final
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("✅ SISTEMA INICIADO COM SUCESSO!")
-    print("=" * 60)
-    print(f"  Wake Lock: {'✅' if wakelock_ok else '❌'}")
-    print(f"  Cloudflare: {'✅' if cloudflare_ok else '❌'}")
-    for servidor in SERVIDORES:
-        print(f"  {servidor['nome']}: {'✅ ' + servidor['url'] if servidor['nome'] in nomes_processos else '❌'}")
-    print(f"  Bot Telegram: {'✅ Conectado' if bot_ativo else '❌ Não configurado'}")
-    print(f"  Monitoramento: ✅ Ativo (normal a cada {INTERVALO_VERIFICACAO}s, reconexão rápida a cada {RECONEXAO_RAPIDA_INTERVALO_MS}ms)")
-    print()
-    print("💡 Comandos do bot: /ping, /status, /servicos, /log, /speed, /reiniciar <nome>, /parar")
-    print("⚠️  Pressione Ctrl+C para encerrar tudo")
-    print("=" * 60)
+    print("=" * 70)
+    print(f"  📡 Wake Lock: ✅ Ativo")
+    print(f"  ☁️  Cloudflare: {'✅' if processos.get('Cloudflare') else '❌'}")
     
-    # Mantém o script rodando
+    for servidor in SERVIDORES:
+        proc = processos.get(servidor["nome"])
+        print(f"  🌐 {servidor['nome']}: {'✅' if proc and proc.poll() is None else '❌'} http://localhost:{servidor['porta']}")
+    
+    print(f"  🤖 Bot Telegram: {'✅ Conectado' if bot_ativo else '❌'}")
+    print(f"  🔄 Auto-recuperação: ✅ Ativa (a cada {INTERVALO_RECONEXAO}s)")
+    print(f"  🔍 Monitoramento: ✅ Ativo")
+    print()
+    print("💡 Comandos disponíveis no Telegram:")
+    print("   /ping, /status, /servicos, /log, /parar, /reiniciar, /forcar_reconexao")
+    print()
+    print("⚠️  Sistema com auto-recuperação ativa!")
+    print("   - Reconexão automática em milissegundos")
+    print("   - Monitoramento de processos")
+    print("   - Reinício automático de serviços")
+    print()
+    print("=" * 70)
+    
     try:
-        while verificacao_ativa:
+        while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        pass
-    finally:
-        limpar_processos(None, None) # Garante que a limpeza seja feita ao sair
+        limpar_processos()
 
 if __name__ == "__main__":
+    bot = None
     main()
